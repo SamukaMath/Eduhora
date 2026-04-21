@@ -212,10 +212,57 @@ if not st.session_state.logged_in:
                     except Exception as e:
                         st.error(f"Erro no banco: {e}")
     st.stop()
+# ================= BARRA LATERAL E PERFIL (USUÁRIO LOGADO) =================
+if st.session_state.logged_in:
+    st.sidebar.markdown(f"👤 **{st.session_state.user_nome}**\n📧 {st.session_state.user_email}")
+    
+    # Bloco Expansível para Edição de Perfil
+    with st.sidebar.expander("⚙️ Minha Conta / Perfil"):
+        # Busca os dados fresquinhos do banco
+        dados_usuario = run_query('SELECT nome, sobrenome FROM usuarios WHERE id=%s', (st.session_state.user_id,), True)
+        atual_nome, atual_sobre = dados_usuario[0] if dados_usuario else (st.session_state.user_nome, "")
+        
+        with st.form("form_atualizar_perfil"):
+            st.markdown("📝 **Dados Pessoais**")
+            upd_nome = st.text_input("Nome", value=atual_nome).strip()
+            upd_sobre = st.text_input("Sobrenome", value=atual_sobre).strip()
+            
+            st.markdown("🔒 **Segurança**")
+            upd_senha = st.text_input("Nova Senha (deixe em branco para não alterar)", type="password")
+            upd_senha2 = st.text_input("Confirmar Nova Senha", type="password")
+            
+            if st.form_submit_button("Salvar Alterações", type="primary", use_container_width=True):
+                if upd_senha and upd_senha != upd_senha2:
+                    st.error("As senhas não coincidem.")
+                else:
+                    try:
+                        if upd_senha:
+                            run_query('UPDATE usuarios SET nome=%s, sobrenome=%s, password=%s WHERE id=%s', 
+                                      (upd_nome, upd_sobre, hash_password(upd_senha), st.session_state.user_id))
+                        else:
+                            run_query('UPDATE usuarios SET nome=%s, sobrenome=%s WHERE id=%s', 
+                                      (upd_nome, upd_sobre, st.session_state.user_id))
+                        
+                        # Atualiza a sessão para o nome mudar na interface na mesma hora
+                        st.session_state.user_nome = upd_nome
+                        st.toast("Perfil atualizado com sucesso!", icon="✅")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao atualizar: {e}")
 
+    st.sidebar.markdown("---")
+    
+    # Se estiver dentro de um projeto (TELA 3), mostra o botão de voltar e o nome da escola
+    if st.session_state.projeto_id:
+        st.sidebar.title(f"🏫 {st.session_state.projeto_nome}")
+        st.sidebar.button("⬅️ Trocar de Escola", on_click=fechar_projeto, use_container_width=True)
+    
+    # Botão de sair global
+    st.sidebar.button("🚪 Sair (Logout)", on_click=logout, use_container_width=True)
+    
 # ================= TELA 2: SELEÇÃO DE PROJETOS =================
 if not st.session_state.projeto_id:
-    st.sidebar.button("🚪 Sair da Conta", on_click=logout)
+
     st.title(f"👋 Olá, {st.session_state.user_nome}!")
     st.subheader("Seus Projetos / Escolas")
     
@@ -256,10 +303,7 @@ if not st.session_state.projeto_id:
     st.stop()
 
 # ================= TELA 3: O APLICATIVO PRINCIPAL =================
-st.sidebar.title(f"🏫 {st.session_state.projeto_nome}")
-st.sidebar.markdown(f"👤 **{st.session_state.user_nome}**\n📧 {st.session_state.user_email}")
-st.sidebar.button("⬅️ Trocar de Escola", on_click=fechar_projeto, use_container_width=True)
-st.sidebar.button("🚪 Sair (Logout)", on_click=logout, use_container_width=True)
+
 
 st.title(f"Projeto Ativo: {st.session_state.projeto_nome}")
 dias_semana = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta"]
