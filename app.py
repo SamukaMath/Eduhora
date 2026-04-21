@@ -26,7 +26,7 @@ def enviar_email_recuperacao(destinatario, nova_senha):
         remetente = st.secrets["EMAIL_USER"]
         senha_app = st.secrets["EMAIL_PASS"]
         
-        assunto = "EduHora Pro - Recuperação de Senha"
+        assunto = "EduHora  - Recuperação de Senha"
         corpo = f"""Olá!
         
 Sua senha foi redefinida com sucesso.
@@ -34,7 +34,7 @@ Sua nova senha temporária é: {nova_senha}
 
 Recomendamos que você faça login e atualize sua senha assim que possível.
 
-Equipe EduHora Pro"""
+Equipe EduHora """
 
         msg = MIMEText(corpo)
         msg['Subject'] = assunto
@@ -98,6 +98,7 @@ def is_valid_email(email):
     padrao = r'^[\w\.-]+@[\w\.-]+\.\w+$'
     return re.match(padrao, email) is not None
 
+
 # ================= CONTROLE DE SESSÃO =================
 if 'logged_in' not in st.session_state: st.session_state.logged_in = False
 if 'user_id' not in st.session_state: st.session_state.user_id = None
@@ -105,6 +106,31 @@ if 'user_nome' not in st.session_state: st.session_state.user_nome = None
 if 'user_email' not in st.session_state: st.session_state.user_email = None
 if 'projeto_id' not in st.session_state: st.session_state.projeto_id = None
 if 'projeto_nome' not in st.session_state: st.session_state.projeto_nome = None
+if 'erro_login' not in st.session_state: st.session_state.erro_login = None
+
+def tentar_login():
+    email = st.session_state.input_email.strip().lower()
+    senha = st.session_state.input_senha
+    if email and senha:
+        # Busca no banco de dados
+        user_data = run_query('SELECT id, password, nome FROM usuarios WHERE email=%s', (email,), True)
+        # Verifica se achou o usuário e se a senha bate
+        if user_data and user_data[0][1] == hash_password(senha):
+            st.session_state.logged_in = True
+            st.session_state.user_id = user_data[0][0]
+            st.session_state.user_nome = user_data[0][2]
+            st.session_state.user_email = email
+            st.session_state.erro_login = None
+        else:
+            st.session_state.erro_login = "E-mail ou senha incorretos."
+
+def logout():
+    for key in list(st.session_state.keys()): del st.session_state[key]
+
+def fechar_projeto():
+    st.session_state.projeto_id = None
+    st.session_state.projeto_nome = None
+    reset_project_data()
 
 def reset_project_data():
     st.session_state.professores = {}
@@ -124,35 +150,29 @@ def load_project_data():
     reqs = run_query('SELECT turma, disciplina, professor, aulas FROM requerimentos WHERE projeto_id=?', (pid,), True)
     st.session_state.requerimentos = [{'turma': r[0], 'disciplina': r[1], 'professor': r[2], 'aulas': r[3]} for r in reqs]
 
-def logout():
-    for key in list(st.session_state.keys()): del st.session_state[key] 
 
-def fechar_projeto():
-    st.session_state.projeto_id = None
-    st.session_state.projeto_nome = None
-    reset_project_data()
 
 # ================= TELA 1: LOGIN E REGISTRO =================
 if not st.session_state.logged_in:
-    st.title("🏫 EduHora Pro - Acesso à Plataforma")
+    st.title("🏫 EduHora - Acesso à Plataforma")
     col1, col2 = st.columns(2)
     
     with col1:
         st.subheader("Já tenho uma conta")
+        
+        # Exibe o erro caso o login tenha falhado
+        if st.session_state.erro_login:
+            st.error(st.session_state.erro_login)
+            st.session_state.erro_login = None # Limpa o erro para não ficar travado
+            
         with st.form("login_form"):
-            log_email = st.text_input("E-mail").strip().lower()
-            log_pwd = st.text_input("Senha", type="password")
-            if st.form_submit_button("Entrar", type="primary", use_container_width=True):
-                if log_email and log_pwd:
-                    user_data = run_query('SELECT id, password, nome FROM usuarios WHERE email=%s', (log_email,), True)
-                    if user_data and user_data[0][1] == hash_password(log_pwd):
-                        st.session_state.logged_in = True
-                        st.session_state.user_id = user_data[0][0]
-                        st.session_state.user_nome = user_data[0][2]
-                        st.session_state.user_email = log_email
-                        st.rerun()
-                    else:
-                        st.error("E-mail ou senha incorretos.")
+            st.text_input("E-mail", key="input_email")
+            st.text_input("Senha", type="password", key="input_senha")
+            
+            # O botão agora aciona o callback ANTES de recarregar a tela
+            st.form_submit_button("Entrar", type="primary", use_container_width=True, on_click=tentar_login)
+            
+        # (Deixe o seu bloco do "Esqueci minha senha" aqui embaixo do jeito que já estava)
         
         # -------- NOVO BLOCO: RECUPERAÇÃO DE SENHA --------
         with st.expander("Esqueci minha senha"):
