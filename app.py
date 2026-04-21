@@ -22,34 +22,43 @@ from reportlab.lib.styles import getSampleStyleSheet
 # ================= CONFIGURAÇÃO GERAL =================
 st.set_page_config(page_title="EduHora - Plataforma", page_icon="🏫", layout="wide")
 
-# ================= CONEXÃO COM POSTGRESQL (NUVEM) =================
-# ================= CONEXÃO OTIMIZADA COM CACHE =================
+# ================= CONEXÃO COM POSTGRESQL (NUVEM - OTIMIZADA) =================
 DB_URL = st.secrets["DB_URL"]
 
-# O cache_resource mantém a conexão com o banco aberta (evita lentidão a cada clique)
-@st.cache_resource(ttl=3600) 
-def get_conexao():
+# Mantém a ligação aberta em memória (cache) durante 10 minutos
+@st.cache_resource(ttl=600)
+def init_connection():
     return psycopg2.connect(DB_URL)
 
 def run_query(query, params=(), is_select=False):
+    # Converte a sintaxe do SQLite (?) para PostgreSQL (%s)
     query = query.replace('?', '%s')
-    conn = get_conexao()
     
     try:
+        conn = init_connection()
+        # Se a ligação tiver sido fechada pelo servidor por inatividade, forçamos a limpeza do cache
+        if conn.closed != 0:
+            st.cache_resource.clear()
+            conn = init_connection()
+            
         with conn.cursor() as c:
             c.execute(query, params)
             if is_select:
-                return c.fetchall()
+                # O fetchall precisa guardar o resultado antes de sair do bloco
+                resultado = c.fetchall()
+                return resultado
             conn.commit()
             return None
+            
     except psycopg2.OperationalError:
-        # Se a conexão "dormir" por inatividade, o sistema limpa o cache e reconecta automaticamente
+        # Em caso de quebra de rede, limpa o cache e tenta uma segunda vez
         st.cache_resource.clear()
-        conn = get_conexao()
+        conn = init_connection()
         with conn.cursor() as c:
             c.execute(query, params)
             if is_select:
-                return c.fetchall()
+                resultado = c.fetchall()
+                return resultado
             conn.commit()
             return None
 
