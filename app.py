@@ -125,7 +125,7 @@ def load_project_data():
     st.session_state.requerimentos = [{'turma': r[0], 'disciplina': r[1], 'professor': r[2], 'aulas': r[3]} for r in reqs]
 
 def logout():
-    for key in list(st.session_state.keys()): del st.session_state[key]
+    for key in list(st.session_state.keys()): del st.session_state[key] 
 
 def fechar_projeto():
     st.session_state.projeto_id = None
