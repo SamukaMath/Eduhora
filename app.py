@@ -6,6 +6,10 @@ import re
 import psycopg2
 import json
 import hashlib
+import smtplib
+from email.mime.text import MIMEText
+import random
+import string
 
 # Dependências de Exportação
 from openpyxl import Workbook
@@ -15,52 +19,14 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 
-import smtplib
-from email.mime.text import MIMEText
-import random
-import string
-
-# ================= FUNÇÃO DE ENVIO DE E-MAIL =================
-def enviar_email_recuperacao(destinatario, nova_senha):
-    try:
-        remetente = st.secrets["EMAIL_USER"]
-        senha_app = st.secrets["EMAIL_PASS"]
-        
-        assunto = "EduHora  - Recuperação de Senha"
-        corpo = f"""Olá!
-        
-Sua senha foi redefinida com sucesso.
-Sua nova senha temporária é: {nova_senha}
-
-Recomendamos que você faça login e atualize sua senha assim que possível.
-
-Equipe EduHora """
-
-        msg = MIMEText(corpo)
-        msg['Subject'] = assunto
-        msg['From'] = remetente
-        msg['To'] = destinatario
-        
-        # Conecta ao servidor do Gmail
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
-            server.login(remetente, senha_app)
-            server.send_message(msg)
-        return True
-    except Exception as e:
-        st.error(f"Erro ao enviar o e-mail: {e}")
-        return False
-
 # ================= CONFIGURAÇÃO GERAL =================
 st.set_page_config(page_title="EduHora - Plataforma", page_icon="🏫", layout="wide")
 
 # ================= CONEXÃO COM POSTGRESQL (NUVEM) =================
-# O Streamlit vai buscar essa URL nos "Secrets" que configuraremos depois
 DB_URL = st.secrets["DB_URL"]
 
 def run_query(query, params=(), is_select=False):
-    # Converte a sintaxe do SQLite (?) para PostgreSQL (%s)
     query = query.replace('?', '%s')
-    
     with psycopg2.connect(DB_URL) as conn:
         with conn.cursor() as c:
             c.execute(query, params)
@@ -70,13 +36,13 @@ def run_query(query, params=(), is_select=False):
             return None
 
 def init_db():
-    # Em PostgreSQL, AUTOINCREMENT é SERIAL
     run_query('''CREATE TABLE IF NOT EXISTS usuarios (
                     id SERIAL PRIMARY KEY, 
                     email TEXT UNIQUE, 
                     password TEXT,
                     nome TEXT,
-                    sobrenome TEXT
+                    sobrenome TEXT,
+                    plano TEXT DEFAULT 'gratis'
                 )''')
     run_query('CREATE TABLE IF NOT EXISTS projetos (id SERIAL PRIMARY KEY, user_id INTEGER, nome TEXT)')
     run_query('CREATE TABLE IF NOT EXISTS professores (id SERIAL PRIMARY KEY, projeto_id INTEGER, nome TEXT, manha TEXT, tarde TEXT)')
@@ -84,13 +50,12 @@ def init_db():
     run_query('CREATE TABLE IF NOT EXISTS turmas (id SERIAL PRIMARY KEY, projeto_id INTEGER, nome TEXT, turno TEXT)')
     run_query('CREATE TABLE IF NOT EXISTS requerimentos (id SERIAL PRIMARY KEY, projeto_id INTEGER, turma TEXT, disciplina TEXT, professor TEXT, aulas INTEGER)')
 
-# Inicializa o banco de dados na nuvem (cria as tabelas se não existirem)
 try:
     init_db()
 except Exception as e:
     st.error(f"Erro ao conectar com o banco de dados: {e}")
 
-# ================= SEGURANÇA =================
+# ================= FUNÇÕES DE SEGURANÇA E E-MAIL =================
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
@@ -98,12 +63,33 @@ def is_valid_email(email):
     padrao = r'^[\w\.-]+@[\w\.-]+\.\w+$'
     return re.match(padrao, email) is not None
 
+def enviar_email_recuperacao(destinatario, nova_senha):
+    try:
+        remetente = st.secrets["EMAIL_USER"]
+        senha_app = st.secrets["EMAIL_PASS"]
+        
+        assunto = "EduHora - Recuperação de Senha"
+        corpo = f"""Olá!\n\nSua senha foi redefinida com sucesso.\nSua nova senha temporária é: {nova_senha}\n\nRecomendamos que você faça login e atualize sua senha assim que possível.\n\nEquipe EduHora Pro"""
+
+        msg = MIMEText(corpo)
+        msg['Subject'] = assunto
+        msg['From'] = remetente
+        msg['To'] = destinatario
+        
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+            server.login(remetente, senha_app)
+            server.send_message(msg)
+        return True
+    except Exception as e:
+        st.error(f"Erro ao enviar o e-mail: {e}")
+        return False
 
 # ================= CONTROLE DE SESSÃO =================
 if 'logged_in' not in st.session_state: st.session_state.logged_in = False
 if 'user_id' not in st.session_state: st.session_state.user_id = None
 if 'user_nome' not in st.session_state: st.session_state.user_nome = None
 if 'user_email' not in st.session_state: st.session_state.user_email = None
+if 'user_plano' not in st.session_state: st.session_state.user_plano = 'gratis'
 if 'projeto_id' not in st.session_state: st.session_state.projeto_id = None
 if 'projeto_nome' not in st.session_state: st.session_state.projeto_nome = None
 if 'erro_login' not in st.session_state: st.session_state.erro_login = None
@@ -112,25 +98,16 @@ def tentar_login():
     email = st.session_state.input_email.strip().lower()
     senha = st.session_state.input_senha
     if email and senha:
-        # Busca no banco de dados
-        user_data = run_query('SELECT id, password, nome FROM usuarios WHERE email=%s', (email,), True)
-        # Verifica se achou o usuário e se a senha bate
+        user_data = run_query('SELECT id, password, nome, plano FROM usuarios WHERE email=%s', (email,), True)
         if user_data and user_data[0][1] == hash_password(senha):
             st.session_state.logged_in = True
             st.session_state.user_id = user_data[0][0]
             st.session_state.user_nome = user_data[0][2]
+            st.session_state.user_plano = user_data[0][3] if user_data[0][3] else 'gratis'
             st.session_state.user_email = email
             st.session_state.erro_login = None
         else:
             st.session_state.erro_login = "E-mail ou senha incorretos."
-
-def logout():
-    for key in list(st.session_state.keys()): del st.session_state[key]
-
-def fechar_projeto():
-    st.session_state.projeto_id = None
-    st.session_state.projeto_nome = None
-    reset_project_data()
 
 def reset_project_data():
     st.session_state.professores = {}
@@ -142,15 +119,25 @@ def load_project_data():
     reset_project_data()
     pid = st.session_state.projeto_id
     profs = run_query('SELECT nome, manha, tarde FROM professores WHERE projeto_id=?', (pid,), True)
-    for row in profs: st.session_state.professores[row[0]] = {"manha": json.loads(row[1]), "tarde": json.loads(row[2])}
+    if profs:
+        for row in profs: st.session_state.professores[row[0]] = {"manha": json.loads(row[1]), "tarde": json.loads(row[2])}
     discs = run_query('SELECT nome FROM disciplinas WHERE projeto_id=?', (pid,), True)
-    st.session_state.disciplinas = [row[0] for row in discs]
+    if discs:
+        st.session_state.disciplinas = [row[0] for row in discs]
     turmas = run_query('SELECT nome, turno FROM turmas WHERE projeto_id=?', (pid,), True)
-    for row in turmas: st.session_state.turmas[row[0]] = row[1]
+    if turmas:
+        for row in turmas: st.session_state.turmas[row[0]] = row[1]
     reqs = run_query('SELECT turma, disciplina, professor, aulas FROM requerimentos WHERE projeto_id=?', (pid,), True)
-    st.session_state.requerimentos = [{'turma': r[0], 'disciplina': r[1], 'professor': r[2], 'aulas': r[3]} for r in reqs]
+    if reqs:
+        st.session_state.requerimentos = [{'turma': r[0], 'disciplina': r[1], 'professor': r[2], 'aulas': r[3]} for r in reqs]
 
+def logout():
+    for key in list(st.session_state.keys()): del st.session_state[key]
 
+def fechar_projeto():
+    st.session_state.projeto_id = None
+    st.session_state.projeto_nome = None
+    reset_project_data()
 
 # ================= TELA 1: LOGIN E REGISTRO =================
 if not st.session_state.logged_in:
@@ -159,49 +146,32 @@ if not st.session_state.logged_in:
     
     with col1:
         st.subheader("Já tenho uma conta")
-        
-        # Exibe o erro caso o login tenha falhado
         if st.session_state.erro_login:
             st.error(st.session_state.erro_login)
-            st.session_state.erro_login = None # Limpa o erro para não ficar travado
+            st.session_state.erro_login = None
             
         with st.form("login_form"):
             st.text_input("E-mail", key="input_email")
             st.text_input("Senha", type="password", key="input_senha")
-            
-            # O botão agora aciona o callback ANTES de recarregar a tela
             st.form_submit_button("Entrar", type="primary", use_container_width=True, on_click=tentar_login)
             
-        # (Deixe o seu bloco do "Esqueci minha senha" aqui embaixo do jeito que já estava)
-        
-        # -------- NOVO BLOCO: RECUPERAÇÃO DE SENHA --------
         with st.expander("Esqueci minha senha"):
             st.markdown("Digite seu e-mail cadastrado para receber uma nova senha temporária.")
             rec_email = st.text_input("E-mail para recuperação:", key="rec_email").strip().lower()
-            
             if st.button("Enviar nova senha", use_container_width=True):
                 if not is_valid_email(rec_email):
                     st.error("Insira um e-mail válido.")
                 else:
-                    # Verifica se o e-mail existe no banco
                     user_exists = run_query('SELECT id FROM usuarios WHERE email=%s', (rec_email,), True)
-                    
                     if user_exists:
-                        # Gera uma senha aleatória de 8 caracteres
                         nova_senha = "".join(random.choices(string.ascii_letters + string.digits, k=8))
                         senha_hasheada = hash_password(nova_senha)
-                        
-                        # Atualiza no banco de dados
                         run_query('UPDATE usuarios SET password=%s WHERE email=%s', (senha_hasheada, rec_email))
-                        
-                        # Tenta enviar o e-mail
                         with st.spinner("Enviando e-mail..."):
                             if enviar_email_recuperacao(rec_email, nova_senha):
-                                st.success("Uma nova senha foi enviada para o seu e-mail! (Verifique também a caixa de Spam).")
+                                st.success("Uma nova senha foi enviada para o seu e-mail! (Verifique o Spam).")
                     else:
-                        # Por segurança, não dizemos se o e-mail existe ou não de forma explícita para evitar rastreio de dados
                         st.success("Se o e-mail estiver cadastrado, uma nova senha será enviada em instantes.")
-        # --------------------------------------------------
 
     with col2:
         st.subheader("Criar Nova Conta")
@@ -222,69 +192,52 @@ if not st.session_state.logged_in:
                     st.error("As senhas não coincidem.")
                 else:
                     try:
-                        run_query('INSERT INTO usuarios (email, password, nome, sobrenome) VALUES (?, ?, ?, ?)', 
-                                  (reg_email, hash_password(reg_pwd), reg_nome, reg_sobrenome))
+                        run_query('INSERT INTO usuarios (email, password, nome, sobrenome, plano) VALUES (%s, %s, %s, %s, %s)', 
+                                  (reg_email, hash_password(reg_pwd), reg_nome, reg_sobrenome, 'gratis'))
                         st.success(f"Conta criada com sucesso, {reg_nome}! Faça login ao lado.")
                     except psycopg2.IntegrityError:
                         st.error("Este e-mail já está cadastrado.")
-                    except Exception as e:
-                        st.error(f"Erro no banco: {e}")
     st.stop()
-# ================= BARRA LATERAL E PERFIL (USUÁRIO LOGADO) =================
-if st.session_state.logged_in:
-    st.sidebar.markdown(f"👤 **{st.session_state.user_nome}**\n📧 {st.session_state.user_email}")
-    
-    # Bloco Expansível para Edição de Perfil
-    with st.sidebar.expander("⚙️ Minha Conta / Perfil"):
-        # Busca os dados fresquinhos do banco
-        dados_usuario = run_query('SELECT nome, sobrenome FROM usuarios WHERE id=%s', (st.session_state.user_id,), True)
-        atual_nome, atual_sobre = dados_usuario[0] if dados_usuario else (st.session_state.user_nome, "")
-        
-        with st.form("form_atualizar_perfil"):
-            st.markdown("📝 **Dados Pessoais**")
-            upd_nome = st.text_input("Nome", value=atual_nome).strip()
-            upd_sobre = st.text_input("Sobrenome", value=atual_sobre).strip()
-            
-            st.markdown("🔒 **Segurança**")
-            upd_senha = st.text_input("Nova Senha (deixe em branco para não alterar)", type="password")
-            upd_senha2 = st.text_input("Confirmar Nova Senha", type="password")
-            
-            if st.form_submit_button("Salvar Alterações", type="primary", use_container_width=True):
-                if upd_senha and upd_senha != upd_senha2:
-                    st.error("As senhas não coincidem.")
-                else:
-                    try:
-                        if upd_senha:
-                            run_query('UPDATE usuarios SET nome=%s, sobrenome=%s, password=%s WHERE id=%s', 
-                                      (upd_nome, upd_sobre, hash_password(upd_senha), st.session_state.user_id))
-                        else:
-                            run_query('UPDATE usuarios SET nome=%s, sobrenome=%s WHERE id=%s', 
-                                      (upd_nome, upd_sobre, st.session_state.user_id))
-                        
-                        # Atualiza a sessão para o nome mudar na interface na mesma hora
-                        st.session_state.user_nome = upd_nome
-                        st.toast("Perfil atualizado com sucesso!", icon="✅")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Erro ao atualizar: {e}")
 
-    st.sidebar.markdown("---")
+# ================= BARRA LATERAL E PERFIL =================
+st.sidebar.markdown(f"👤 **{st.session_state.user_nome}** ({st.session_state.user_plano.upper()})\n📧 {st.session_state.user_email}")
+
+with st.sidebar.expander("⚙️ Minha Conta / Perfil"):
+    dados_usuario = run_query('SELECT nome, sobrenome FROM usuarios WHERE id=%s', (st.session_state.user_id,), True)
+    atual_nome, atual_sobre = dados_usuario[0] if dados_usuario else (st.session_state.user_nome, "")
     
-    # Se estiver dentro de um projeto (TELA 3), mostra o botão de voltar e o nome da escola
-    if st.session_state.projeto_id:
-        st.sidebar.title(f"🏫 {st.session_state.projeto_nome}")
-        st.sidebar.button("⬅️ Trocar de Escola", on_click=fechar_projeto, use_container_width=True)
-    
-    # Botão de sair global
-    st.sidebar.button("🚪 Sair (Logout)", on_click=logout, use_container_width=True)
-    
+    with st.form("form_atualizar_perfil"):
+        upd_nome = st.text_input("Nome", value=atual_nome).strip()
+        upd_sobre = st.text_input("Sobrenome", value=atual_sobre).strip()
+        upd_senha = st.text_input("Nova Senha (opcional)", type="password")
+        upd_senha2 = st.text_input("Confirmar Nova Senha", type="password")
+        
+        if st.form_submit_button("Salvar Alterações", type="primary", use_container_width=True):
+            if upd_senha and upd_senha != upd_senha2:
+                st.error("As senhas não coincidem.")
+            else:
+                if upd_senha:
+                    run_query('UPDATE usuarios SET nome=%s, sobrenome=%s, password=%s WHERE id=%s', 
+                              (upd_nome, upd_sobre, hash_password(upd_senha), st.session_state.user_id))
+                else:
+                    run_query('UPDATE usuarios SET nome=%s, sobrenome=%s WHERE id=%s', 
+                              (upd_nome, upd_sobre, st.session_state.user_id))
+                st.session_state.user_nome = upd_nome
+                st.toast("Perfil atualizado com sucesso!", icon="✅")
+                st.rerun()
+
+st.sidebar.markdown("---")
+if st.session_state.projeto_id:
+    st.sidebar.title(f"🏫 {st.session_state.projeto_nome}")
+    st.sidebar.button("⬅️ Trocar de Escola", on_click=fechar_projeto, use_container_width=True)
+st.sidebar.button("🚪 Sair (Logout)", on_click=logout, use_container_width=True)
+
 # ================= TELA 2: SELEÇÃO DE PROJETOS =================
 if not st.session_state.projeto_id:
-
     st.title(f"👋 Olá, {st.session_state.user_nome}!")
     st.subheader("Seus Projetos / Escolas")
     
-    meus_projetos = run_query('SELECT id, nome FROM projetos WHERE user_id=?', (st.session_state.user_id,), True)
+    meus_projetos = run_query('SELECT id, nome FROM projetos WHERE user_id=%s', (st.session_state.user_id,), True)
     
     if meus_projetos:
         cols = st.columns(3)
@@ -300,12 +253,12 @@ if not st.session_state.projeto_id:
                         st.rerun()
                 with c2:
                     if st.button("🗑️", key=f"del_{p_id}", help="Excluir Escola"):
-                        run_query('DELETE FROM projetos WHERE id=?', (p_id,))
-                        run_query('DELETE FROM professores WHERE projeto_id=?', (p_id,))
-                        run_query('DELETE FROM disciplinas WHERE projeto_id=?', (p_id,))
-                        run_query('DELETE FROM turmas WHERE projeto_id=?', (p_id,))
-                        run_query('DELETE FROM requerimentos WHERE projeto_id=?', (p_id,))
-                        st.success("Projeto excluído com sucesso!")
+                        run_query('DELETE FROM projetos WHERE id=%s', (p_id,))
+                        run_query('DELETE FROM professores WHERE projeto_id=%s', (p_id,))
+                        run_query('DELETE FROM disciplinas WHERE projeto_id=%s', (p_id,))
+                        run_query('DELETE FROM turmas WHERE projeto_id=%s', (p_id,))
+                        run_query('DELETE FROM requerimentos WHERE projeto_id=%s', (p_id,))
+                        st.success("Projeto excluído!")
                         st.rerun()
     else:
         st.info("Você ainda não tem projetos criados. Crie o primeiro abaixo!")
@@ -316,13 +269,11 @@ if not st.session_state.projeto_id:
         nome_escola = st.text_input("Nome da Escola / Instituição:")
         if st.form_submit_button("➕ Criar Projeto", type="primary"):
             if nome_escola.strip():
-                run_query('INSERT INTO projetos (user_id, nome) VALUES (?, ?)', (st.session_state.user_id, nome_escola.strip()))
+                run_query('INSERT INTO projetos (user_id, nome) VALUES (%s, %s)', (st.session_state.user_id, nome_escola.strip()))
                 st.rerun()
     st.stop()
 
 # ================= TELA 3: O APLICATIVO PRINCIPAL =================
-
-
 st.title(f"Projeto Ativo: {st.session_state.projeto_nome}")
 dias_semana = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta"]
 
@@ -346,8 +297,8 @@ with aba_prof:
         if st.form_submit_button("➕ Salvar Professor", type="primary") and nome_prof:
             off_m = [i for i, v in enumerate(m_vars) if v]
             off_t = [i for i, v in enumerate(t_vars) if v]
-            run_query('DELETE FROM professores WHERE projeto_id=? AND nome=?', (pid, nome_prof))
-            run_query('INSERT INTO professores (projeto_id, nome, manha, tarde) VALUES (?, ?, ?, ?)', 
+            run_query('DELETE FROM professores WHERE projeto_id=%s AND nome=%s', (pid, nome_prof))
+            run_query('INSERT INTO professores (projeto_id, nome, manha, tarde) VALUES (%s, %s, %s, %s)', 
                       (pid, nome_prof, json.dumps(off_m), json.dumps(off_t)))
             st.session_state.professores[nome_prof] = {"manha": off_m, "tarde": off_t}
             st.rerun()
@@ -361,7 +312,7 @@ with aba_prof:
         st.dataframe(df_profs, use_container_width=True)
         excluir_prof = st.selectbox("Excluir professor:", [""] + list(st.session_state.professores.keys()))
         if st.button("🗑️ Excluir Professor") and excluir_prof:
-            run_query('DELETE FROM professores WHERE projeto_id=? AND nome=?', (pid, excluir_prof))
+            run_query('DELETE FROM professores WHERE projeto_id=%s AND nome=%s', (pid, excluir_prof))
             del st.session_state.professores[excluir_prof]
             st.rerun()
 
@@ -370,7 +321,7 @@ with aba_disc:
     col1, col2 = st.columns([3, 1])
     nova_disc = col1.text_input("Disciplina:").strip()
     if col2.button("➕ Adicionar", use_container_width=True) and nova_disc not in st.session_state.disciplinas:
-        run_query('INSERT INTO disciplinas (projeto_id, nome) VALUES (?, ?)', (pid, nova_disc))
+        run_query('INSERT INTO disciplinas (projeto_id, nome) VALUES (%s, %s)', (pid, nova_disc))
         st.session_state.disciplinas.append(nova_disc)
         st.rerun()
 
@@ -379,28 +330,41 @@ with aba_disc:
             c1, c2 = st.columns([4, 1])
             c1.write(f"📚 {d}")
             if c2.button("🗑️", key=f"del_disc_{i}"):
-                run_query('DELETE FROM disciplinas WHERE projeto_id=? AND nome=?', (pid, d))
+                run_query('DELETE FROM disciplinas WHERE projeto_id=%s AND nome=%s', (pid, d))
                 st.session_state.disciplinas.remove(d)
                 st.rerun()
 
 with aba_turmas:
     st.subheader("Cadastro de Turmas")
-    with st.form("form_turmas", clear_on_submit=True):
-        col1, col2, col3 = st.columns([2, 2, 1])
-        nome_t = col1.text_input("Turma:").strip().upper()
-        turno_t = col2.selectbox("Turno:", ["Manhã", "Tarde"])
-        if col3.form_submit_button("➕ Adicionar") and nome_t:
-            run_query('DELETE FROM turmas WHERE projeto_id=? AND nome=?', (pid, nome_t))
-            run_query('INSERT INTO turmas (projeto_id, nome, turno) VALUES (?, ?, ?)', (pid, nome_t, turno_t))
-            st.session_state.turmas[nome_t] = turno_t
-            st.rerun()
+    
+    # ---- LÓGICA DE TRAVA DO PLANO GRÁTIS ----
+    limite_gratis = 3
+    total_turmas = len(st.session_state.turmas)
+    
+    if st.session_state.user_plano == 'gratis' and total_turmas >= limite_gratis:
+        st.warning(f"⚠️ **Limite Atingido!** No plano gratuito você pode criar até {limite_gratis} turmas.")
+        st.info("Desbloqueie turmas ilimitadas e relatórios avançados assinando o **EduHora Pro**!")
+        
+        # Link de Pagamento - Insira sua URL do Stripe ou Mercado Pago aqui
+        url_pagamento = f"https://link_de_pagamento_aqui?prefilled_email={st.session_state.user_email}"
+        st.markdown(f'<a href="{url_pagamento}" target="_blank"><button style="width:100%; background-color:#FF4B4B; color:white; border:none; padding:10px; border-radius:5px; font-weight:bold; cursor:pointer;">💎 Fazer Upgrade para o PRO</button></a>', unsafe_allow_html=True)
+    else:
+        with st.form("form_turmas", clear_on_submit=True):
+            col1, col2, col3 = st.columns([2, 2, 1])
+            nome_t = col1.text_input("Turma:").strip().upper()
+            turno_t = col2.selectbox("Turno:", ["Manhã", "Tarde"])
+            if col3.form_submit_button("➕ Adicionar") and nome_t:
+                run_query('DELETE FROM turmas WHERE projeto_id=%s AND nome=%s', (pid, nome_t))
+                run_query('INSERT INTO turmas (projeto_id, nome, turno) VALUES (%s, %s, %s)', (pid, nome_t, turno_t))
+                st.session_state.turmas[nome_t] = turno_t
+                st.rerun()
 
     if st.session_state.turmas:
         df_turmas = pd.DataFrame([{"Turma": t, "Turno": trn} for t, trn in st.session_state.turmas.items()])
         st.dataframe(df_turmas, use_container_width=True)
         excluir_turma = st.selectbox("Excluir turma:", [""] + list(st.session_state.turmas.keys()))
         if st.button("🗑️ Excluir Turma") and excluir_turma:
-            run_query('DELETE FROM turmas WHERE projeto_id=? AND nome=?', (pid, excluir_turma))
+            run_query('DELETE FROM turmas WHERE projeto_id=%s AND nome=%s', (pid, excluir_turma))
             del st.session_state.turmas[excluir_turma]
             st.rerun()
 
@@ -416,14 +380,14 @@ with aba_distrib:
             p = c3.selectbox("Professor", sorted(st.session_state.professores.keys()))
             a = c4.number_input("Aulas", min_value=1, value=2)
             if c5.form_submit_button("🔗 Vincular"):
-                run_query('INSERT INTO requerimentos (projeto_id, turma, disciplina, professor, aulas) VALUES (?, ?, ?, ?, ?)', (pid, t, d, p, a))
+                run_query('INSERT INTO requerimentos (projeto_id, turma, disciplina, professor, aulas) VALUES (%s, %s, %s, %s, %s)', (pid, t, d, p, a))
                 st.session_state.requerimentos.append({'turma': t, 'disciplina': d, 'professor': p, 'aulas': a})
                 st.rerun()
 
         if st.session_state.requerimentos:
             st.dataframe(pd.DataFrame(st.session_state.requerimentos), use_container_width=True)
             if st.button("🗑️ Limpar Toda a Grade desta Escola"):
-                run_query('DELETE FROM requerimentos WHERE projeto_id=?', (pid,))
+                run_query('DELETE FROM requerimentos WHERE projeto_id=%s', (pid,))
                 st.session_state.requerimentos = []
                 st.rerun()
 
