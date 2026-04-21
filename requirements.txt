@@ -3,4 +3,4 @@ pandas
 ortools
 openpyxl
 reportlab
-psycopg2
+psycopg2-binary
