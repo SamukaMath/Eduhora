@@ -3,7 +3,7 @@ import pandas as pd
 from ortools.sat.python import cp_model
 import io
 import re
-import sqlite3
+import psycopg2
 import json
 import hashlib
 
@@ -16,36 +16,46 @@ from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 
 # ================= CONFIGURAÇÃO GERAL =================
-DB_NAME = "eduhora_multi.db"
-st.set_page_config(page_title="EduHora Pro - Plataforma", page_icon="🏫", layout="wide")
+st.set_page_config(page_title="EduHora - Plataforma", page_icon="🏫", layout="wide")
 
-# ================= FUNÇÕES DE BANCO DE DADOS =================
+# ================= CONEXÃO COM POSTGRESQL (NUVEM) =================
+# O Streamlit vai buscar essa URL nos "Secrets" que configuraremos depois
+DB_URL = st.secrets["DB_URL"]
+
 def run_query(query, params=(), is_select=False):
-    with sqlite3.connect(DB_NAME) as conn:
-        c = conn.cursor()
-        c.execute(query, params)
-        if is_select:
-            return c.fetchall()
-        conn.commit()
-        return c.lastrowid
+    # Converte a sintaxe do SQLite (?) para PostgreSQL (%s)
+    query = query.replace('?', '%s')
+    
+    with psycopg2.connect(DB_URL) as conn:
+        with conn.cursor() as c:
+            c.execute(query, params)
+            if is_select:
+                return c.fetchall()
+            conn.commit()
+            return None
 
 def init_db():
+    # Em PostgreSQL, AUTOINCREMENT é SERIAL
     run_query('''CREATE TABLE IF NOT EXISTS usuarios (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                    id SERIAL PRIMARY KEY, 
                     email TEXT UNIQUE, 
                     password TEXT,
                     nome TEXT,
                     sobrenome TEXT
                 )''')
-    run_query('CREATE TABLE IF NOT EXISTS projetos (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, nome TEXT)')
-    
-    run_query('CREATE TABLE IF NOT EXISTS professores (id INTEGER PRIMARY KEY AUTOINCREMENT, projeto_id INTEGER, nome TEXT, manha TEXT, tarde TEXT)')
-    run_query('CREATE TABLE IF NOT EXISTS disciplinas (id INTEGER PRIMARY KEY AUTOINCREMENT, projeto_id INTEGER, nome TEXT)')
-    run_query('CREATE TABLE IF NOT EXISTS turmas (id INTEGER PRIMARY KEY AUTOINCREMENT, projeto_id INTEGER, nome TEXT, turno TEXT)')
-    run_query('CREATE TABLE IF NOT EXISTS requerimentos (id INTEGER PRIMARY KEY AUTOINCREMENT, projeto_id INTEGER, turma TEXT, disciplina TEXT, professor TEXT, aulas INTEGER)')
+    run_query('CREATE TABLE IF NOT EXISTS projetos (id SERIAL PRIMARY KEY, user_id INTEGER, nome TEXT)')
+    run_query('CREATE TABLE IF NOT EXISTS professores (id SERIAL PRIMARY KEY, projeto_id INTEGER, nome TEXT, manha TEXT, tarde TEXT)')
+    run_query('CREATE TABLE IF NOT EXISTS disciplinas (id SERIAL PRIMARY KEY, projeto_id INTEGER, nome TEXT)')
+    run_query('CREATE TABLE IF NOT EXISTS turmas (id SERIAL PRIMARY KEY, projeto_id INTEGER, nome TEXT, turno TEXT)')
+    run_query('CREATE TABLE IF NOT EXISTS requerimentos (id SERIAL PRIMARY KEY, projeto_id INTEGER, turma TEXT, disciplina TEXT, professor TEXT, aulas INTEGER)')
 
-init_db()
+# Inicializa o banco de dados na nuvem (cria as tabelas se não existirem)
+try:
+    init_db()
+except Exception as e:
+    st.error(f"Erro ao conectar com o banco de dados: {e}")
 
+# ================= SEGURANÇA =================
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
@@ -99,7 +109,7 @@ if not st.session_state.logged_in:
         with st.form("login_form"):
             log_email = st.text_input("E-mail").strip().lower()
             log_pwd = st.text_input("Senha", type="password")
-            if st.form_submit_button("Entrar", type="primary", width='stretch'):
+            if st.form_submit_button("Entrar", type="primary", use_container_width=True):
                 if log_email and log_pwd:
                     user_data = run_query('SELECT id, password, nome FROM usuarios WHERE email=?', (log_email,), True)
                     if user_data and user_data[0][1] == hash_password(log_pwd):
@@ -121,7 +131,7 @@ if not st.session_state.logged_in:
             reg_pwd = st.text_input("Nova Senha", type="password")
             reg_pwd2 = st.text_input("Confirmar Senha", type="password")
             
-            if st.form_submit_button("Cadastrar", width='stretch'):
+            if st.form_submit_button("Cadastrar", use_container_width=True):
                 if not reg_nome or not reg_sobrenome or not reg_email or not reg_pwd:
                     st.error("Preencha todos os campos obrigatórios.")
                 elif not is_valid_email(reg_email):
@@ -133,8 +143,10 @@ if not st.session_state.logged_in:
                         run_query('INSERT INTO usuarios (email, password, nome, sobrenome) VALUES (?, ?, ?, ?)', 
                                   (reg_email, hash_password(reg_pwd), reg_nome, reg_sobrenome))
                         st.success(f"Conta criada com sucesso, {reg_nome}! Faça login ao lado.")
-                    except sqlite3.IntegrityError:
+                    except psycopg2.IntegrityError:
                         st.error("Este e-mail já está cadastrado.")
+                    except Exception as e:
+                        st.error(f"Erro no banco: {e}")
     st.stop()
 
 # ================= TELA 2: SELEÇÃO DE PROJETOS =================
@@ -152,13 +164,12 @@ if not st.session_state.projeto_id:
                 st.info(f"**{p_nome}**")
                 c1, c2 = st.columns([2, 1])
                 with c1:
-                    if st.button("Abrir", key=f"abrir_{p_id}", width='stretch'):
+                    if st.button("Abrir", key=f"abrir_{p_id}", use_container_width=True):
                         st.session_state.projeto_id = p_id
                         st.session_state.projeto_nome = p_nome
                         load_project_data()
                         st.rerun()
                 with c2:
-                    # Botão para excluir projeto e dados relacionados em cascata
                     if st.button("🗑️", key=f"del_{p_id}", help="Excluir Escola"):
                         run_query('DELETE FROM projetos WHERE id=?', (p_id,))
                         run_query('DELETE FROM professores WHERE projeto_id=?', (p_id,))
@@ -183,8 +194,8 @@ if not st.session_state.projeto_id:
 # ================= TELA 3: O APLICATIVO PRINCIPAL =================
 st.sidebar.title(f"🏫 {st.session_state.projeto_nome}")
 st.sidebar.markdown(f"👤 **{st.session_state.user_nome}**\n📧 {st.session_state.user_email}")
-st.sidebar.button("⬅️ Trocar de Escola", on_click=fechar_projeto, width='stretch')
-st.sidebar.button("🚪 Sair (Logout)", on_click=logout, width='stretch')
+st.sidebar.button("⬅️ Trocar de Escola", on_click=fechar_projeto, use_container_width=True)
+st.sidebar.button("🚪 Sair (Logout)", on_click=logout, use_container_width=True)
 
 st.title(f"Projeto Ativo: {st.session_state.projeto_nome}")
 dias_semana = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta"]
@@ -221,7 +232,7 @@ with aba_prof:
              "Evitar Tarde": ", ".join([dias_semana[i] for i in d["tarde"]]) or "-"}
             for p, d in st.session_state.professores.items()
         ])
-        st.dataframe(df_profs, width='stretch')
+        st.dataframe(df_profs, use_container_width=True)
         excluir_prof = st.selectbox("Excluir professor:", [""] + list(st.session_state.professores.keys()))
         if st.button("🗑️ Excluir Professor") and excluir_prof:
             run_query('DELETE FROM professores WHERE projeto_id=? AND nome=?', (pid, excluir_prof))
@@ -232,7 +243,7 @@ with aba_disc:
     st.subheader("Cadastro de Disciplinas")
     col1, col2 = st.columns([3, 1])
     nova_disc = col1.text_input("Disciplina:").strip()
-    if col2.button("➕ Adicionar", width='stretch') and nova_disc not in st.session_state.disciplinas:
+    if col2.button("➕ Adicionar", use_container_width=True) and nova_disc not in st.session_state.disciplinas:
         run_query('INSERT INTO disciplinas (projeto_id, nome) VALUES (?, ?)', (pid, nova_disc))
         st.session_state.disciplinas.append(nova_disc)
         st.rerun()
@@ -260,7 +271,7 @@ with aba_turmas:
 
     if st.session_state.turmas:
         df_turmas = pd.DataFrame([{"Turma": t, "Turno": trn} for t, trn in st.session_state.turmas.items()])
-        st.dataframe(df_turmas, width='stretch')
+        st.dataframe(df_turmas, use_container_width=True)
         excluir_turma = st.selectbox("Excluir turma:", [""] + list(st.session_state.turmas.keys()))
         if st.button("🗑️ Excluir Turma") and excluir_turma:
             run_query('DELETE FROM turmas WHERE projeto_id=? AND nome=?', (pid, excluir_turma))
@@ -284,20 +295,19 @@ with aba_distrib:
                 st.rerun()
 
         if st.session_state.requerimentos:
-            st.dataframe(pd.DataFrame(st.session_state.requerimentos), width='stretch')
+            st.dataframe(pd.DataFrame(st.session_state.requerimentos), use_container_width=True)
             if st.button("🗑️ Limpar Toda a Grade desta Escola"):
                 run_query('DELETE FROM requerimentos WHERE projeto_id=?', (pid,))
                 st.session_state.requerimentos = []
                 st.rerun()
 
 with aba_gerar:
-    # Adicionada a nova variável de limite de aulas
     col1, col2, col3 = st.columns(3)
     spin_manha = col1.number_input("Aulas/dia (Manhã):", min_value=1, max_value=10, value=5)
-    spin_tarde = col2.number_input("Aulas/dia (Tarde):", min_value=1, max_value=10, value=5)
-    max_aulas_disc = col3.number_input("Máx. mesma disciplina/dia:", min_value=1, max_value=5, value=3, help="Impede que o sistema gere 3 ou mais aulas da mesma matéria num único dia para a turma.")
+    spin_tarde = col2.number_input("Aulas/dia (Tarde):", min_value=1, max_value=10, value=6)
+    max_aulas_disc = col3.number_input("Máx. mesma disciplina/dia:", min_value=1, max_value=5, value=2)
     
-    if st.button("⚙️ INICIAR MOTOR MATEMÁTICO", type="primary", width='stretch'):
+    if st.button("⚙️ INICIAR MOTOR MATEMÁTICO", type="primary", use_container_width=True):
         if not st.session_state.requerimentos:
             st.error("Adicione vínculos de aulas primeiro.")
         else:
@@ -328,7 +338,6 @@ with aba_gerar:
                             ap = [alocacoes[(r_idx, d, a)] for r_idx, req in enumerate(st.session_state.requerimentos) if req['professor'] == prof and (r_idx, d, a) in alocacoes]
                             if ap: modelo.AddAtMostOne(ap)
 
-                # NOVA RESTRIÇÃO RIGOROSA: Limite de aulas da mesma disciplina por dia (Padrão: <= 2)
                 for d in range(dias):
                     for turma in st.session_state.turmas.keys():
                         disciplinas_turma = set([req['disciplina'] for req in st.session_state.requerimentos if req['turma'] == turma])
@@ -387,13 +396,13 @@ with aba_gerar:
                     st.session_state.df_tarde = pd.DataFrame(dados_t)
                     st.success("🎉 Horários gerados com sucesso!")
                 else:
-                    st.error("Não foi possível gerar os horários. Reveja as regras e cargas horárias. (Dica: Se pediu muitas aulas de uma mesma disciplina e limitou o Máx/Dia a 2, pode não haver espaço suficiente na semana).")
+                    st.error("Não foi possível gerar os horários. Reveja as regras e cargas horárias.")
 
     if 'df_manha' in st.session_state:
         st.markdown("### ☀️ Grade - Turno da Manhã")
-        st.data_editor(st.session_state.df_manha, width='stretch', hide_index=True)
+        st.data_editor(st.session_state.df_manha, use_container_width=True, hide_index=True)
         st.markdown("### 🌆 Grade - Turno da Tarde")
-        st.data_editor(st.session_state.df_tarde, width='stretch', hide_index=True)
+        st.data_editor(st.session_state.df_tarde, use_container_width=True, hide_index=True)
         
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
