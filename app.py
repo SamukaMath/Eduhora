@@ -126,13 +126,11 @@ def load_project_data():
 
 def logout():
     for key in list(st.session_state.keys()): del st.session_state[key]
-    st.rerun()
 
 def fechar_projeto():
     st.session_state.projeto_id = None
     st.session_state.projeto_nome = None
     reset_project_data()
-    st.rerun()
 
 # ================= TELA 1: LOGIN E REGISTRO =================
 if not st.session_state.logged_in:
