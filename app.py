@@ -23,11 +23,29 @@ from reportlab.lib.styles import getSampleStyleSheet
 st.set_page_config(page_title="EduHora - Plataforma", page_icon="🏫", layout="wide")
 
 # ================= CONEXÃO COM POSTGRESQL (NUVEM) =================
+# ================= CONEXÃO OTIMIZADA COM CACHE =================
 DB_URL = st.secrets["DB_URL"]
+
+# O cache_resource mantém a conexão com o banco aberta (evita lentidão a cada clique)
+@st.cache_resource(ttl=3600) 
+def get_conexao():
+    return psycopg2.connect(DB_URL)
 
 def run_query(query, params=(), is_select=False):
     query = query.replace('?', '%s')
-    with psycopg2.connect(DB_URL) as conn:
+    conn = get_conexao()
+    
+    try:
+        with conn.cursor() as c:
+            c.execute(query, params)
+            if is_select:
+                return c.fetchall()
+            conn.commit()
+            return None
+    except psycopg2.OperationalError:
+        # Se a conexão "dormir" por inatividade, o sistema limpa o cache e reconecta automaticamente
+        st.cache_resource.clear()
+        conn = get_conexao()
         with conn.cursor() as c:
             c.execute(query, params)
             if is_select:
