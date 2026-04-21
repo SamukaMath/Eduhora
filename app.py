@@ -15,6 +15,41 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 
+import smtplib
+from email.mime.text import MIMEText
+import random
+import string
+
+# ================= FUNÇÃO DE ENVIO DE E-MAIL =================
+def enviar_email_recuperacao(destinatario, nova_senha):
+    try:
+        remetente = st.secrets["EMAIL_USER"]
+        senha_app = st.secrets["EMAIL_PASS"]
+        
+        assunto = "EduHora Pro - Recuperação de Senha"
+        corpo = f"""Olá!
+        
+Sua senha foi redefinida com sucesso.
+Sua nova senha temporária é: {nova_senha}
+
+Recomendamos que você faça login e atualize sua senha assim que possível.
+
+Equipe EduHora Pro"""
+
+        msg = MIMEText(corpo)
+        msg['Subject'] = assunto
+        msg['From'] = remetente
+        msg['To'] = destinatario
+        
+        # Conecta ao servidor do Gmail
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+            server.login(remetente, senha_app)
+            server.send_message(msg)
+        return True
+    except Exception as e:
+        st.error(f"Erro ao enviar o e-mail: {e}")
+        return False
+
 # ================= CONFIGURAÇÃO GERAL =================
 st.set_page_config(page_title="EduHora - Plataforma", page_icon="🏫", layout="wide")
 
@@ -111,7 +146,7 @@ if not st.session_state.logged_in:
             log_pwd = st.text_input("Senha", type="password")
             if st.form_submit_button("Entrar", type="primary", use_container_width=True):
                 if log_email and log_pwd:
-                    user_data = run_query('SELECT id, password, nome FROM usuarios WHERE email=?', (log_email,), True)
+                    user_data = run_query('SELECT id, password, nome FROM usuarios WHERE email=%s', (log_email,), True)
                     if user_data and user_data[0][1] == hash_password(log_pwd):
                         st.session_state.logged_in = True
                         st.session_state.user_id = user_data[0][0]
@@ -120,6 +155,35 @@ if not st.session_state.logged_in:
                         st.rerun()
                     else:
                         st.error("E-mail ou senha incorretos.")
+        
+        # -------- NOVO BLOCO: RECUPERAÇÃO DE SENHA --------
+        with st.expander("Esqueci minha senha"):
+            st.markdown("Digite seu e-mail cadastrado para receber uma nova senha temporária.")
+            rec_email = st.text_input("E-mail para recuperação:", key="rec_email").strip().lower()
+            
+            if st.button("Enviar nova senha", use_container_width=True):
+                if not is_valid_email(rec_email):
+                    st.error("Insira um e-mail válido.")
+                else:
+                    # Verifica se o e-mail existe no banco
+                    user_exists = run_query('SELECT id FROM usuarios WHERE email=%s', (rec_email,), True)
+                    
+                    if user_exists:
+                        # Gera uma senha aleatória de 8 caracteres
+                        nova_senha = "".join(random.choices(string.ascii_letters + string.digits, k=8))
+                        senha_hasheada = hash_password(nova_senha)
+                        
+                        # Atualiza no banco de dados
+                        run_query('UPDATE usuarios SET password=%s WHERE email=%s', (senha_hasheada, rec_email))
+                        
+                        # Tenta enviar o e-mail
+                        with st.spinner("Enviando e-mail..."):
+                            if enviar_email_recuperacao(rec_email, nova_senha):
+                                st.success("Uma nova senha foi enviada para o seu e-mail! (Verifique também a caixa de Spam).")
+                    else:
+                        # Por segurança, não dizemos se o e-mail existe ou não de forma explícita para evitar rastreio de dados
+                        st.success("Se o e-mail estiver cadastrado, uma nova senha será enviada em instantes.")
+        # --------------------------------------------------
 
     with col2:
         st.subheader("Criar Nova Conta")
